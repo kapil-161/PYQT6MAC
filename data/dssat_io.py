@@ -80,7 +80,177 @@ def prepare_experiment(selected_folder: str) -> List[tuple]:
     except Exception as e:
         logger.error(f"Error preparing experiments: {str(e)}", exc_info=True)
         return []
+def read_forage_file(file_path: str) -> Optional[DataFrame]:
+    """Read and process FORAGE.OUT file with flexible column handling."""
+    try:
+        # Normalize the file path to ensure the correct format
+        file_path = os.path.normpath(file_path)
+        logger.info(f"Reading FORAGE.OUT file: {file_path}")
+        
+        if not os.path.exists(file_path):
+            logger.error(f"File does not exist: {file_path}")
+            return None
 
+        # Read file with efficient encoding handling
+        encodings = ['utf-8', 'latin-1']
+        lines = None
+        for encoding in encodings:
+            try:
+                with open(file_path, "r", encoding=encoding) as file:
+                    lines = file.readlines()
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if not lines:
+            logger.error(f"Could not read file with any encoding: {file_path}")
+            return None
+
+        # Process data more efficiently
+        data_frames = []
+        
+        # Find all header lines (starting with @ or *)
+        header_indices = [i for i, line in enumerate(lines) 
+                         if line.strip().startswith("@") or 
+                            (line.strip().startswith("*") and "YEAR" in line)]
+        
+        if not header_indices:
+            logger.error("No header line found in FORAGE.OUT file")
+            return None
+            
+        # Process each data block
+        for idx, start_idx in enumerate(header_indices):
+            next_idx = header_indices[idx + 1] if idx + 1 < len(header_indices) else len(lines)
+            
+            # Get header line and extract column names
+            header_line = lines[start_idx].strip()
+            headers = header_line.lstrip("@").lstrip("*").strip().split()
+            
+            # Get data lines for this block
+            data_lines = []
+            for line in lines[start_idx+1:next_idx]:
+                line = line.strip()
+                if line and not line.startswith("*") and not line.startswith("@"):
+                    # Split the line and handle column count mismatch
+                    values = line.split()
+                    
+                    # Handle mismatch between header columns and data values
+                    if len(values) != len(headers):
+                        logger.warning(f"Column count mismatch: {len(headers)} header columns, {len(values)} data values")
+                        
+                        if len(values) > len(headers):
+                            # Too many values - trim extras
+                            values = values[:len(headers)]
+                        else:
+                            # Too few values - pad with None
+                            values.extend([None] * (len(headers) - len(values)))
+                            
+                    data_lines.append(values)
+            
+            if data_lines:
+                try:
+                    # Create DataFrame for this block
+                    block_df = DataFrame(data_lines, columns=headers)
+                    
+                    # Try to extract treatment number from surrounding text
+                    treatment_lines = [
+                        line.strip() for line in lines[start_idx-5:start_idx] 
+                        if "TREATMENT" in line.upper()
+                    ]
+                    
+                    if treatment_lines:
+                        try:
+                            parts = treatment_lines[0].split()
+                            trt_num = next((p for p in parts if p.isdigit()), None)
+                            if trt_num:
+                                block_df["TRT"] = trt_num
+                                logger.info(f"Added treatment number {trt_num} to data block")
+                        except Exception as e:
+                            logger.warning(f"Could not extract treatment number: {e}")
+                    
+                    # Add to collection of data frames
+                    data_frames.append(block_df)
+                    logger.info(f"Added data block with {len(block_df)} rows and {len(block_df.columns)} columns")
+                except Exception as e:
+                    logger.error(f"Error creating DataFrame for block: {e}")
+        
+        # Combine all data frames
+        if not data_frames:
+            logger.warning("No valid data blocks found in FORAGE.OUT file")
+            return None
+            
+        try:
+            # Combine all data frames (try to align columns)
+            combined_data = pd.concat(data_frames, ignore_index=True)
+            
+            # Drop columns that are completely empty
+            combined_data = combined_data.loc[:, combined_data.notna().any()]
+            
+            # Standardize data types
+            combined_data = standardize_dtypes(combined_data)
+            
+            # Ensure TRT column exists
+            if "TRT" not in combined_data.columns:
+                if "TRNO" in combined_data.columns:
+                    combined_data["TRT"] = combined_data["TRNO"]
+                elif "TR" in combined_data.columns:
+                    combined_data["TRT"] = combined_data["TR"]
+                else:
+                    # Create default TRT column
+                    combined_data["TRT"] = "1"
+            
+            # Convert numeric columns
+            for col in combined_data.columns:
+                if col not in ["TRT", "TRNO", "TR"]:
+                    combined_data[col] = pd.to_numeric(combined_data[col], errors='ignore')
+            
+            # Create DATE column if YEAR and DOY exist
+            if "YEAR" in combined_data.columns and "DOY" in combined_data.columns:
+                combined_data["DATE"] = pd.to_datetime(
+                    combined_data["YEAR"].astype(str) + 
+                    combined_data["DOY"].astype(str).str.zfill(3),
+                    format="%Y%j",
+                    errors='coerce'
+                )
+            
+            # Log final result
+            logger.info(f"Successfully read FORAGE.OUT with {len(combined_data)} rows and {len(combined_data.columns)} columns")
+            return combined_data
+            
+        except Exception as e:
+            logger.error(f"Error combining data frames: {e}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Error reading FORAGE.OUT file: {e}")
+        return None
+
+def modify_read_file(file_path: str) -> Optional[DataFrame]:
+    """Enhanced read_file function with specialized handling for different file types."""
+    try:
+        # Normalize the file path to ensure the correct format
+        file_path = os.path.normpath(file_path)
+        print(f"Attempting to open file: {file_path}")
+        print(f"File exists check: {os.path.exists(file_path)}")
+        
+        if not os.path.exists(file_path):
+            logger.error(f"File does not exist: {file_path}")
+            return None
+            
+        # Detect file type by name
+        file_name = os.path.basename(file_path).upper()
+        
+        # Special handling for different file types
+        if file_name == "FORAGE.OUT":
+            logger.info("Detected FORAGE.OUT file, using specialized reader")
+            return read_forage_file(file_path)
+        
+        # For other file types, use the original processing logic
+        return read_file(file_path)
+        
+    except Exception as e:
+        logger.error(f"Error in modified read_file: {e}")
+        return None
 def prepare_treatment(selected_folder: str, selected_experiment: str) -> Optional[DataFrame]:
     """Prepare treatment data based on selected folder and experiment."""
     try:
@@ -253,11 +423,22 @@ def process_treatment_block(lines: List[str]) -> Optional[DataFrame]:
             return None
 
         headers = lines[header_index].lstrip("@").strip().split()
-        data_lines = [
-            line.strip().split()
-            for line in lines[header_index + 1:]
-            if line.strip() and not line.startswith("*")
-        ]
+        data_lines = []
+        
+        # Process each data line
+        for line in lines[header_index + 1:]:
+            if line.strip() and not line.startswith("*"):
+                values = line.strip().split()
+                # Handle column count mismatch
+                if len(values) > len(headers):
+                    # If there are more values than headers, truncate to match header count
+                    values = values[:len(headers)]
+                    logger.warning(f"Data row has more columns than header. Truncating to {len(headers)} columns.")
+                elif len(values) < len(headers):
+                    # If there are fewer values than headers, pad with None
+                    values.extend([None] * (len(headers) - len(values)))
+                    logger.warning(f"Data row has fewer columns than header. Padding to {len(headers)} columns.")
+                data_lines.append(values)
 
         if not data_lines:
             return None
