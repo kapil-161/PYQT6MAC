@@ -81,7 +81,7 @@ def prepare_experiment(selected_folder: str) -> List[tuple]:
         logger.error(f"Error preparing experiments: {str(e)}", exc_info=True)
         return []
 def read_forage_file(file_path: str) -> Optional[DataFrame]:
-    """Read and process FORAGE.OUT file with flexible column handling."""
+    """Read and process FORAGE.OUT file with flexible format handling, starting from CR column."""
     try:
         # Normalize the file path to ensure the correct format
         file_path = os.path.normpath(file_path)
@@ -106,125 +106,135 @@ def read_forage_file(file_path: str) -> Optional[DataFrame]:
             logger.error(f"Could not read file with any encoding: {file_path}")
             return None
 
-        # Process data more efficiently
-        data_frames = []
-        
-        # Find all header lines (starting with @ or *)
-        header_indices = [i for i, line in enumerate(lines) 
-                         if line.strip().startswith("@") or 
-                            (line.strip().startswith("*") and "YEAR" in line)]
-        
-        if not header_indices:
-            logger.error("No header line found in FORAGE.OUT file")
-            return None
-            
-        # Process each data block
-        for idx, start_idx in enumerate(header_indices):
-            next_idx = header_indices[idx + 1] if idx + 1 < len(header_indices) else len(lines)
-            
-            # Get header line and extract column names
-            header_line = lines[start_idx].strip()
-            headers = header_line.lstrip("@").lstrip("*").strip().split()
-            
-            # Get data lines for this block
-            data_lines = []
-            for line in lines[start_idx+1:next_idx]:
-                line = line.strip()
-                if line and not line.startswith("*") and not line.startswith("@"):
-                    # Split the line and handle column count mismatch
-                    values = line.split()
-                    
-                    # Handle mismatch between header columns and data values
-                    if len(values) != len(headers):
-                        logger.warning(f"Column count mismatch: {len(headers)} header columns, {len(values)} data values")
-                        
-                        if len(values) > len(headers):
-                            # Too many values - trim extras
-                            values = values[:len(headers)]
-                        else:
-                            # Too few values - pad with None
-                            values.extend([None] * (len(headers) - len(values)))
-                            
-                    data_lines.append(values)
-            
-            if data_lines:
-                try:
-                    # Create DataFrame for this block
-                    block_df = DataFrame(data_lines, columns=headers)
-                    
-                    # Try to extract treatment number from surrounding text
-                    treatment_lines = [
-                        line.strip() for line in lines[start_idx-5:start_idx] 
-                        if "TREATMENT" in line.upper()
-                    ]
-                    
-                    if treatment_lines:
-                        try:
-                            parts = treatment_lines[0].split()
-                            trt_num = next((p for p in parts if p.isdigit()), None)
-                            if trt_num:
-                                block_df["TRT"] = trt_num
-                                logger.info(f"Added treatment number {trt_num} to data block")
-                        except Exception as e:
-                            logger.warning(f"Could not extract treatment number: {e}")
-                    
-                    # Add to collection of data frames
-                    data_frames.append(block_df)
-                    logger.info(f"Added data block with {len(block_df)} rows and {len(block_df.columns)} columns")
-                except Exception as e:
-                    logger.error(f"Error creating DataFrame for block: {e}")
-        
-        # Combine all data frames
-        if not data_frames:
-            logger.warning("No valid data blocks found in FORAGE.OUT file")
-            return None
-            
-        try:
-            # Combine all data frames (try to align columns)
-            combined_data = pd.concat(data_frames, ignore_index=True)
-            
-            # Drop columns that are completely empty
-            combined_data = combined_data.loc[:, combined_data.notna().any()]
-            
-            # Standardize data types
-            combined_data = standardize_dtypes(combined_data)
-            
-            # Ensure TRT column exists
-            if "TRT" not in combined_data.columns:
-                if "TRNO" in combined_data.columns:
-                    combined_data["TRT"] = combined_data["TRNO"]
-                elif "TR" in combined_data.columns:
-                    combined_data["TRT"] = combined_data["TR"]
-                else:
-                    # Create default TRT column
-                    combined_data["TRT"] = "1"
-            
-            # Convert numeric columns
-            for col in combined_data.columns:
-                if col not in ["TRT", "TRNO", "TR"]:
-                    combined_data[col] = pd.to_numeric(combined_data[col], errors='ignore')
-            
-            # Create DATE column if YEAR and DOY exist
-            if "YEAR" in combined_data.columns and "DOY" in combined_data.columns:
-                combined_data["DATE"] = pd.to_datetime(
-                    combined_data["YEAR"].astype(str) + 
-                    combined_data["DOY"].astype(str).str.zfill(3),
-                    format="%Y%j",
-                    errors='coerce'
-                )
-            
-            # Log final result
-            logger.info(f"Successfully read FORAGE.OUT with {len(combined_data)} rows and {len(combined_data.columns)} columns")
-            return combined_data
-            
-        except Exception as e:
-            logger.error(f"Error combining data frames: {e}")
-            return None
+        # Define column names, starting from CR (skipping RUN and FILEX)
+        column_names = [
+            "CR", "TRNO", "FHNO", "YEAR", "DOY", 
+            "RCWAH", "RLWAH", "RSWAH", "RSRWH", "RRTWH", 
+            "RLAIH", "FHWAH", "FHNAH", "FHN%H", "FHC%H", 
+            "FHLGH", "FHL%H", "MOWC", "RSPLC"
+        ]
 
+        # Process data
+        data_rows = []
+        in_data_section = False
+        
+        for line in lines:
+            line = line.rstrip()
+            
+            # Skip empty lines
+            if not line.strip():
+                continue
+                
+            # Check if this is a header line
+            if line.strip().startswith("@RUN"):
+                in_data_section = True
+                continue
+                
+            # Skip non-data lines
+            if not in_data_section or line.startswith("*"):
+                continue
+            
+            # Now we're processing actual data - parse fields
+            try:
+                # Split by whitespace
+                fields = line.split()
+                
+                # Skip empty lines after splitting
+                if not fields:
+                    continue
+                
+                # Detect format based on field patterns
+                row_data = []
+                
+                # Standard format check (rows with "AL" in the second field)
+                standard_format = len(fields) > 1 and fields[1] == "AL"
+                
+                if standard_format:
+                    # Format like rows 1-3: Skip RUN and FILEX (fields[0] and fields[1])
+                    row_data = fields[2:]  # Start from CR column (third field)
+                else:
+                    # Alternative format (rows 4-9)
+                    # First determine where to start based on pattern recognition
+                    # For these rows, we'll try to map to same column structure
+                    # but will require additional logic based on your specific data patterns
+                    
+                    # This is a simplified approach - adjust as needed
+                    if len(fields) >= 3 and fields[0].isdigit() and fields[1].isdigit() and fields[2].isdigit():
+                        # For alternative format, first field might be YEAR, second DOY, etc.
+                        # We'll start from the beginning but map differently
+                        row_data = fields
+                
+                # Fill in missing values with None
+                while len(row_data) < len(column_names):
+                    row_data.append(None)
+                
+                # Truncate if too long
+                if len(row_data) > len(column_names):
+                    row_data = row_data[:len(column_names)]
+                
+                data_rows.append(row_data)
+                
+            except Exception as e:
+                logger.warning(f"Error parsing line: {line}. Error: {e}")
+                continue
+        
+        if not data_rows:
+            logger.warning("No data rows found in FORAGE.OUT file")
+            return None
+            
+        # Create DataFrame
+        df = DataFrame(data_rows, columns=column_names)
+        
+        # Convert numeric columns
+        for col in df.columns:
+            if col != "CR":  # Only CR might be non-numeric
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                except Exception as e:
+                    logger.warning(f"Could not convert column {col} to numeric: {e}")
+        
+        # Add format type flag
+        df['data_format'] = 'unknown'
+        # Define standard format by "AL" in CR column
+        standard_mask = (df['CR'] == 'AL')
+        df.loc[standard_mask, 'data_format'] = 'standard'
+        df.loc[~standard_mask, 'data_format'] = 'alternative'
+        
+        # Ensure TRT column exists for consistency with other data
+        if "TRNO" in df.columns and "TRT" not in df.columns:
+            df["TRT"] = df["TRNO"]
+        
+        # Create DATE column from YEAR and DOY - only for rows where it makes sense
+        if "YEAR" in df.columns and "DOY" in df.columns:
+            try:
+                # Only create dates for rows where YEAR and DOY are numeric
+                date_mask = df['YEAR'].apply(lambda x: isinstance(x, (int, float)) or 
+                                            (isinstance(x, str) and x.isdigit()))
+                date_mask &= df['DOY'].apply(lambda x: isinstance(x, (int, float)) or 
+                                            (isinstance(x, str) and x.isdigit()))
+                
+                # Only process rows where both columns can be numeric
+                if date_mask.any():
+                    # Convert to string and create dates
+                    year_str = df.loc[date_mask, 'YEAR'].astype(str)
+                    doy_str = df.loc[date_mask, 'DOY'].astype(str).str.zfill(3)
+                    dates = pd.to_datetime(year_str + doy_str, format="%Y%j", errors='coerce')
+                    
+                    # Initialize DATE column with NaT (pandas' null for datetime)
+                    if 'DATE' not in df.columns:
+                        df['DATE'] = pd.NaT
+                    
+                    # Assign calculated dates
+                    df.loc[date_mask, 'DATE'] = dates
+            except Exception as e:
+                logger.warning(f"Could not create DATE column: {e}")
+        
+        logger.info(f"Successfully read FORAGE.OUT with {len(df)} rows and {len(df.columns)} columns")
+        return df
+        
     except Exception as e:
         logger.error(f"Error reading FORAGE.OUT file: {e}")
         return None
-
 def modify_read_file(file_path: str) -> Optional[DataFrame]:
     """Enhanced read_file function with specialized handling for different file types."""
     try:
