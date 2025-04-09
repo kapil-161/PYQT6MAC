@@ -80,187 +80,14 @@ def prepare_experiment(selected_folder: str) -> List[tuple]:
     except Exception as e:
         logger.error(f"Error preparing experiments: {str(e)}", exc_info=True)
         return []
-def read_forage_file(file_path: str) -> Optional[DataFrame]:
-    """Read and process FORAGE.OUT file with flexible format handling, starting from CR column."""
-    try:
-        # Normalize the file path to ensure the correct format
-        file_path = os.path.normpath(file_path)
-        logger.info(f"Reading FORAGE.OUT file: {file_path}")
-        
-        if not os.path.exists(file_path):
-            logger.error(f"File does not exist: {file_path}")
-            return None
 
-        # Read file with efficient encoding handling
-        encodings = ['utf-8', 'latin-1']
-        lines = None
-        for encoding in encodings:
-            try:
-                with open(file_path, "r", encoding=encoding) as file:
-                    lines = file.readlines()
-                break
-            except UnicodeDecodeError:
-                continue
+import pandas as pd
 
-        if not lines:
-            logger.error(f"Could not read file with any encoding: {file_path}")
-            return None
 
-        # Define column names, starting from CR (skipping RUN and FILEX)
-        column_names = [
-            "CR", "TRNO", "FHNO", "YEAR", "DOY", 
-            "RCWAH", "RLWAH", "RSWAH", "RSRWH", "RRTWH", 
-            "RLAIH", "FHWAH", "FHNAH", "FHN%H", "FHC%H", 
-            "FHLGH", "FHL%H", "MOWC", "RSPLC"
-        ]
 
-        # Process data
-        data_rows = []
-        in_data_section = False
-        
-        for line in lines:
-            line = line.rstrip()
-            
-            # Skip empty lines
-            if not line.strip():
-                continue
-                
-            # Check if this is a header line
-            if line.strip().startswith("@RUN"):
-                in_data_section = True
-                continue
-                
-            # Skip non-data lines
-            if not in_data_section or line.startswith("*"):
-                continue
-            
-            # Now we're processing actual data - parse fields
-            try:
-                # Split by whitespace
-                fields = line.split()
-                
-                # Skip empty lines after splitting
-                if not fields:
-                    continue
-                
-                # Detect format based on field patterns
-                row_data = []
-                
-                # Standard format check (rows with "AL" in the second field)
-                standard_format = len(fields) > 1 and fields[1] == "AL"
-                
-                if standard_format:
-                    # Format like rows 1-3: Skip RUN and FILEX (fields[0] and fields[1])
-                    row_data = fields[2:]  # Start from CR column (third field)
-                else:
-                    # Alternative format (rows 4-9)
-                    # First determine where to start based on pattern recognition
-                    # For these rows, we'll try to map to same column structure
-                    # but will require additional logic based on your specific data patterns
-                    
-                    # This is a simplified approach - adjust as needed
-                    if len(fields) >= 3 and fields[0].isdigit() and fields[1].isdigit() and fields[2].isdigit():
-                        # For alternative format, first field might be YEAR, second DOY, etc.
-                        # We'll start from the beginning but map differently
-                        row_data = fields
-                
-                # Fill in missing values with None
-                while len(row_data) < len(column_names):
-                    row_data.append(None)
-                
-                # Truncate if too long
-                if len(row_data) > len(column_names):
-                    row_data = row_data[:len(column_names)]
-                
-                data_rows.append(row_data)
-                
-            except Exception as e:
-                logger.warning(f"Error parsing line: {line}. Error: {e}")
-                continue
-        
-        if not data_rows:
-            logger.warning("No data rows found in FORAGE.OUT file")
-            return None
-            
-        # Create DataFrame
-        df = DataFrame(data_rows, columns=column_names)
-        
-        # Convert numeric columns
-        for col in df.columns:
-            if col != "CR":  # Only CR might be non-numeric
-                try:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                except Exception as e:
-                    logger.warning(f"Could not convert column {col} to numeric: {e}")
-        
-        # Add format type flag
-        df['data_format'] = 'unknown'
-        # Define standard format by "AL" in CR column
-        standard_mask = (df['CR'] == 'AL')
-        df.loc[standard_mask, 'data_format'] = 'standard'
-        df.loc[~standard_mask, 'data_format'] = 'alternative'
-        
-        # Ensure TRT column exists for consistency with other data
-        if "TRNO" in df.columns and "TRT" not in df.columns:
-            df["TRT"] = df["TRNO"]
-        
-        # Create DATE column from YEAR and DOY - only for rows where it makes sense
-        if "YEAR" in df.columns and "DOY" in df.columns:
-            try:
-                # Only create dates for rows where YEAR and DOY are numeric
-                date_mask = df['YEAR'].apply(lambda x: isinstance(x, (int, float)) or 
-                                            (isinstance(x, str) and x.isdigit()))
-                date_mask &= df['DOY'].apply(lambda x: isinstance(x, (int, float)) or 
-                                            (isinstance(x, str) and x.isdigit()))
-                
-                # Only process rows where both columns can be numeric
-                if date_mask.any():
-                    # Convert to string and create dates
-                    year_str = df.loc[date_mask, 'YEAR'].astype(str)
-                    doy_str = df.loc[date_mask, 'DOY'].astype(str).str.zfill(3)
-                    dates = pd.to_datetime(year_str + doy_str, format="%Y%j", errors='coerce')
-                    
-                    # Initialize DATE column with NaT (pandas' null for datetime)
-                    if 'DATE' not in df.columns:
-                        df['DATE'] = pd.NaT
-                    
-                    # Assign calculated dates
-                    df.loc[date_mask, 'DATE'] = dates
-            except Exception as e:
-                logger.warning(f"Could not create DATE column: {e}")
-        
-        logger.info(f"Successfully read FORAGE.OUT with {len(df)} rows and {len(df.columns)} columns")
-        return df
-        
-    except Exception as e:
-        logger.error(f"Error reading FORAGE.OUT file: {e}")
-        return None
-def modify_read_file(file_path: str) -> Optional[DataFrame]:
-    """Enhanced read_file function with specialized handling for different file types."""
-    try:
-        # Normalize the file path to ensure the correct format
-        file_path = os.path.normpath(file_path)
-        print(f"Attempting to open file: {file_path}")
-        print(f"File exists check: {os.path.exists(file_path)}")
-        
-        if not os.path.exists(file_path):
-            logger.error(f"File does not exist: {file_path}")
-            return None
-            
-        # Detect file type by name
-        file_name = os.path.basename(file_path).upper()
-        
-        # Special handling for different file types
-        if file_name == "FORAGE.OUT":
-            logger.info("Detected FORAGE.OUT file, using specialized reader")
-            return read_forage_file(file_path)
-        
-        # For other file types, use the original processing logic
-        return read_file(file_path)
-        
-    except Exception as e:
-        logger.error(f"Error in modified read_file: {e}")
-        return None
+
+
+
 def prepare_treatment(selected_folder: str, selected_experiment: str) -> Optional[DataFrame]:
     """Prepare treatment data based on selected folder and experiment."""
     try:
@@ -357,19 +184,18 @@ def prepare_out_files(selected_folder: str) -> List[str]:
         logger.error(f"Error preparing OUT files: {str(e)}")
         return []
 
+
 def read_file(file_path: str) -> Optional[DataFrame]:
-    """Read and process DSSAT output file with optimized performance."""
+    """Read and process DSSAT output file with optimized performance and FORAGE.OUT handling."""
     try:
-        # Normalize the file path to ensure the correct format
         file_path = os.path.normpath(file_path)
         print(f"Attempting to open file: {file_path}")
         print(f"File exists check: {os.path.exists(file_path)}")
-        
+
         if not os.path.exists(file_path):
-            logger.error(f"File does not exist: {file_path}")
+            print(f"File does not exist: {file_path}")
             return None
 
-        # Read file with efficient encoding handling
         encodings = ['utf-8', 'latin-1']
         lines = None
         for encoding in encodings:
@@ -381,33 +207,30 @@ def read_file(file_path: str) -> Optional[DataFrame]:
                 continue
 
         if not lines:
-            logger.error(f"Could not read file with any encoding: {file_path}")
+            print(f"Could not read file with any encoding: {file_path}")
             return None
 
-        # Process data more efficiently
         data_frames = []
         treatment_indices = [i for i, line in enumerate(lines) if line.strip().upper().startswith("TREATMENT")]
 
         if treatment_indices:
-            # Multiple treatment format
             for idx, start_idx in enumerate(treatment_indices):
                 next_idx = treatment_indices[idx + 1] if idx + 1 < len(treatment_indices) else len(lines)
                 df = process_treatment_block(lines[start_idx:next_idx])
                 if df is not None:
                     data_frames.append(df)
         else:
-            # Single treatment format
+            # Check if it's FORAGE.OUT by looking for "@RUN FILEX" line
+            is_forage = any(line.strip().startswith('@RUN') for line in lines)
             df = process_treatment_block(lines)
             if df is not None:
                 data_frames.append(df)
 
-        # Combine and process data efficiently
         if data_frames:
             combined_data = pd.concat(data_frames, ignore_index=True)
             combined_data = combined_data.loc[:, combined_data.notna().any()]
             combined_data = standardize_dtypes(combined_data)
-            
-            # Create DATE column if possible
+
             if "YEAR" in combined_data.columns and "DOY" in combined_data.columns:
                 combined_data["DATE"] = pd.to_datetime(
                     combined_data["YEAR"].astype(str) + 
@@ -415,46 +238,51 @@ def read_file(file_path: str) -> Optional[DataFrame]:
                     format="%Y%j",
                     errors='coerce'
                 )
-                
+
             return combined_data
 
         return None
 
     except Exception as e:
-        logger.error(f"Error processing file {file_path}: {str(e)}")
+        print(f"Error processing file {file_path}: {str(e)}")
         return None
 
 
 def process_treatment_block(lines: List[str]) -> Optional[DataFrame]:
-    """Helper function to process a treatment block of data."""
+    """Helper function to process a treatment block of data, including special handling for FORAGE.OUT."""
     try:
         header_index = next((i for i, line in enumerate(lines) if line.startswith("@")), None)
         if header_index is None:
             return None
 
         headers = lines[header_index].lstrip("@").strip().split()
+
+        # Detect FORAGE.OUT style with FILEX and prepare correction
+        is_forage = headers[:2] == ["RUN", "FILEX"]
+
         data_lines = []
-        
-        # Process each data line
         for line in lines[header_index + 1:]:
-            if line.strip() and not line.startswith("*"):
+            if line.strip() and not line.startswith("*") and not line.startswith("@"):
                 values = line.strip().split()
+
+                if is_forage:
+                    # Check for missing FILEX column (e.g. "1 AL ..." becomes "1 <missing> AL ...")
+                    if len(values) == len(headers) - 1 and values[1] == "AL":
+                        values.insert(1, "")  # insert empty FILEX value
+
                 # Handle column count mismatch
                 if len(values) > len(headers):
-                    # If there are more values than headers, truncate to match header count
                     values = values[:len(headers)]
-                    logger.warning(f"Data row has more columns than header. Truncating to {len(headers)} columns.")
                 elif len(values) < len(headers):
-                    # If there are fewer values than headers, pad with None
                     values.extend([None] * (len(headers) - len(values)))
-                    logger.warning(f"Data row has fewer columns than header. Padding to {len(headers)} columns.")
+
                 data_lines.append(values)
 
         if not data_lines:
             return None
 
-        df = DataFrame(data_lines, columns=headers)
-        
+        df = pd.DataFrame(data_lines, columns=headers)
+
         # Extract treatment number if present
         treatment_line = next((line for line in lines if line.strip().upper().startswith("TREATMENT")), None)
         if treatment_line:
@@ -463,6 +291,8 @@ def process_treatment_block(lines: List[str]) -> Optional[DataFrame]:
                 df["TRT"] = trt_num
             except IndexError:
                 pass
+
+        # Optional cleanup
         if 'CR' in df.columns:
             df = df.drop(columns=['CR'])
 
@@ -471,6 +301,7 @@ def process_treatment_block(lines: List[str]) -> Optional[DataFrame]:
     except Exception as e:
         logger.error(f"Error processing treatment block: {str(e)}")
         return None
+
 
 def read_observed_data(selected_folder: str, selected_experiment: str, x_var: str, y_vars: List[str]) -> Optional[DataFrame]:
     """Read observed data from .xxT file matching experiment name pattern."""
@@ -805,3 +636,4 @@ def read_evaluate_file(selected_folder: str) -> Optional[DataFrame]:
         logger.error(f"Error reading EVALUATE.OUT: {str(e)}")
         logger.exception("Detailed error:")
         return None
+    
