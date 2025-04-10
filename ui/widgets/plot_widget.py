@@ -101,7 +101,7 @@ class PlotWidget(QWidget):
         scaling_frame.setStyleSheet("background-color: #f8f8f8; border: 1px solid #ddd;")
         
         scaling_layout = QVBoxLayout()
-        scaling_layout.setContentsMargins(5, 3, 5, 3)  # Small margins
+        scaling_layout.setContentsMargins(1, 1, 1, 1)  # Small margins
         scaling_frame.setLayout(scaling_layout)
         
         # Scaling panel heading
@@ -117,7 +117,6 @@ class PlotWidget(QWidget):
         
         # Set a fixed height for the scaling panel
         scaling_frame.setMinimumHeight(60)
-        # Let it grow with content but don't let it get too large
         scaling_frame.setMaximumHeight(200)
         scaling_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         
@@ -127,28 +126,61 @@ class PlotWidget(QWidget):
         # Add left container to main layout (80% of space)
         main_layout.addWidget(left_container, 80)
         
-        # Right side - legend container
-        # Create a scroll area
+        # Right side - legend container with scroll area
+        legend_frame = QFrame()
+        legend_frame.setFrameShape(QFrame.Shape.NoFrame)  # Changed from StyledPanel
+        legend_frame.setFrameShadow(QFrame.Shadow.Plain)  # Changed from Raised
+        legend_frame.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: none;  /* Removed border */
+                border-radius: 0px;  /* Removed rounded corners */
+            }
+        """)
+        legend_layout = QVBoxLayout()
+        legend_layout.setContentsMargins(0, 0, 0, 0)  # Removed margins
+        legend_frame.setLayout(legend_layout)
+        
+        # Create scroll area for legend content
         legend_scroll_area = QScrollArea()
         legend_scroll_area.setWidgetResizable(True)
         legend_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         legend_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         legend_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         
-        # Create the legend container as the content of the scroll area
+        # Create the legend container that will hold the actual items
         self.legend_container = QWidget()
         self.legend_layout = QVBoxLayout()
+        self.legend_layout.setSpacing(2)  # Reduce spacing between items
+        self.legend_layout.setContentsMargins(5, 5, 5, 5)
+        self.legend_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # Align items to top
         self.legend_container.setLayout(self.legend_layout)
         
         # Set the legend container as the widget for the scroll area
         legend_scroll_area.setWidget(self.legend_container)
         
-        # Add the scroll area to the main layout
-        main_layout.addWidget(legend_scroll_area, 20)
+        # Add title to legend frame
+        legend_title = QLabel("Legend")
+        legend_title.setStyleSheet("""
+            font-weight: bold;
+            font-size: 12pt;
+            color: #333;
+            padding: 5px;
+            background-color: #ffffff;  /* Match background color */
+            border: none;  /* Removed border */
+        """)
+        legend_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        legend_layout.addWidget(legend_title)
         
-        # Set initial size for legend scroll area
-        legend_scroll_area.setMinimumWidth(180)
-        legend_scroll_area.setMaximumWidth(220)
+        # Add scroll area to legend frame
+        legend_layout.addWidget(legend_scroll_area)
+        
+        # Add the legend frame to main layout (20% of space)
+        main_layout.addWidget(legend_frame, 20)
+        
+        # Set size constraints for legend
+        legend_frame.setMinimumWidth(180)
+        legend_frame.setMaximumWidth(220)
         
         # Enable auto-range on resize
         self.plot_view.enableAutoRange()
@@ -381,9 +413,10 @@ class PlotWidget(QWidget):
         })
         
         # Create custom Qt legend in the legend container widget
-        legend_label = QLabel("<b>Legend</b>")
-        legend_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.legend_layout.addWidget(legend_label)
+        # Removing duplicate legend label
+        # legend_label = QLabel("<b>Legend</b>")
+        # legend_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # self.legend_layout.addWidget(legend_label)
         
         # Storage for our legend entries
         legend_entries = {
@@ -515,9 +548,9 @@ class PlotWidget(QWidget):
         # Build the custom legend in the sidebar widget
         for category in ["Simulated", "Observed"]:
             if legend_entries[category]:
-                # Add category header
+                # Add category header with reduced top margin
                 category_label = QLabel(f"<b>--- {category} ---</b>")
-                category_label.setStyleSheet("margin-top: 10px;")
+                category_label.setStyleSheet("margin-top: 5px;")  # Reduced from 10px to 5px
                 self.legend_layout.addWidget(category_label)
                 
                 # Add variables and treatments under each category

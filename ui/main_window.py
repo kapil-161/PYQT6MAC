@@ -27,13 +27,15 @@ from data.dssat_io import (
     create_batch_file, run_treatment
 )
 from data.data_processing import (
-    get_evaluate_variable_pairs, get_all_evaluate_variables
+    get_evaluate_variable_pairs, get_all_evaluate_variables,
+    get_variable_info
 )
 from ui.widgets.plot_widget import PlotWidget
 from ui.widgets.status_widget import StatusWidget
 from ui.widgets.data_table_widget import DataTableWidget
 from ui.widgets.scatter_plot_widget import ScatterPlotWidget
 from ui.widgets.metrics_table_widget import MetricsDialog, MetricsTableWidget
+from ui.widgets.forage_plot_widget import ForagePlotWidget
 
 class MainWindow(QMainWindow):
     execution_completed = pyqtSignal(bool, str)
@@ -232,6 +234,12 @@ class MainWindow(QMainWindow):
         self.scatter_tab.setLayout(scatter_layout)
         self.scatter_plot = ScatterPlotWidget()
         scatter_layout.addWidget(self.scatter_plot)
+
+        self.forage_tab = QWidget()
+        forage_layout = QVBoxLayout()
+        self.forage_tab.setLayout(forage_layout)
+        self.forage_plot = ForagePlotWidget()
+        forage_layout.addWidget(self.forage_plot)
         
         self.data_tab = QWidget()
         data_layout = QVBoxLayout()
@@ -241,6 +249,7 @@ class MainWindow(QMainWindow):
         
         self.content_area.addTab(self.time_series_tab, "Time Series")
         self.content_area.addTab(self.scatter_tab, "Scatter Plot")
+        self.content_area.addTab(self.forage_tab, "Forage Plot")
         self.content_area.addTab(self.data_tab, "Data View")
         self.content_area.currentChanged.connect(self.on_tab_changed)
     
@@ -330,6 +339,8 @@ class MainWindow(QMainWindow):
         self.out_file_selector.setMaximumHeight(80)
         file_layout.addWidget(self.out_file_selector)
         layout.addWidget(file_group)
+
+        # Time Series group
         self.time_series_group = QGroupBox("Time Series Variables")
         ts_layout = QVBoxLayout()
         self.time_series_group.setLayout(ts_layout)
@@ -342,6 +353,8 @@ class MainWindow(QMainWindow):
         self.y_var_selector.setMinimumHeight(120)
         ts_layout.addWidget(self.y_var_selector)
         layout.addWidget(self.time_series_group)
+
+        # Scatter Plot group
         self.scatter_group = QGroupBox("Scatter Plot Variables")
         scatter_layout = QVBoxLayout()
         self.scatter_group.setLayout(scatter_layout)
@@ -364,6 +377,21 @@ class MainWindow(QMainWindow):
         self.scatter_y_var_selector.setMinimumHeight(120)
         scatter_layout.addWidget(self.scatter_y_var_selector)
         layout.addWidget(self.scatter_group)
+
+        # Forage Plot group  
+        self.forage_group = QGroupBox("Forage Plot Variables")
+        forage_layout = QVBoxLayout()
+        self.forage_group.setLayout(forage_layout)
+        forage_layout.addWidget(QLabel("X Variable"))
+        self.forage_x_var_selector = QComboBox()
+        forage_layout.addWidget(self.forage_x_var_selector)
+        forage_layout.addWidget(QLabel("Y Variables"))
+        self.forage_y_var_selector = QListWidget()
+        self.forage_y_var_selector.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.forage_y_var_selector.setMinimumHeight(120)
+        forage_layout.addWidget(self.forage_y_var_selector)
+        layout.addWidget(self.forage_group)
+
         self.refresh_button = QPushButton("Refresh Plot")
         self.refresh_button.setToolTip("Refresh the current plot")
         self.refresh_button.setStyleSheet(
@@ -372,7 +400,10 @@ class MainWindow(QMainWindow):
             "QPushButton:disabled { background-color: #cccccc; }"
         )
         layout.addWidget(self.refresh_button)
+
+        # Hide groups initially
         self.scatter_group.setVisible(False)
+        self.forage_group.setVisible(False)
         self.file_group = file_group
     
     def setup_metrics_button(self, layout):
@@ -398,6 +429,8 @@ class MainWindow(QMainWindow):
         self.scatter_var_selector.itemSelectionChanged.connect(self.on_scatter_var_selection_changed)
         self.scatter_x_var_selector.currentIndexChanged.connect(self.on_scatter_var_selection_changed)
         self.scatter_y_var_selector.itemSelectionChanged.connect(self.on_scatter_var_selection_changed)
+        self.forage_x_var_selector.currentIndexChanged.connect(self.on_forage_var_selection_changed)
+        self.forage_y_var_selector.itemSelectionChanged.connect(self.on_forage_var_selection_changed)
         self.refresh_button.clicked.connect(self.on_refresh_clicked)
         self.connect_metrics_signals()
         self.execution_completed.connect(self.on_execution_completed)
@@ -413,22 +446,33 @@ class MainWindow(QMainWindow):
         self.load_folders()
     
     def update_ui_state(self):
+        # Basic state checks
         has_folder = self.selected_folder is not None
         has_experiment = self.selected_experiment is not None
         has_treatments = len(self.selected_treatments) > 0
         execution_complete = self.execution_status.get("completed", False)
+        
+        # Enable/disable controls based on state
         self.run_button.setEnabled(has_folder and has_experiment and has_treatments)
         self.time_series_group.setEnabled(execution_complete)
         self.scatter_group.setEnabled(execution_complete)
+        self.forage_group.setEnabled(execution_complete)
         self.refresh_button.setEnabled(execution_complete)
+        
+        # Show/hide groups based on current tab
         current_tab = self.content_area.currentIndex()
         self.time_series_group.setVisible(current_tab == 0)
         self.scatter_group.setVisible(current_tab == 1)
+        self.forage_group.setVisible(current_tab == 2)
+        
+        # Scatter plot specific controls
         sim_vs_meas_selected = self.sim_vs_meas_radio.isChecked()
         custom_xy_selected = self.custom_xy_radio.isChecked()
         self.scatter_var_selector.setVisible(sim_vs_meas_selected)
         self.scatter_x_var_selector.setVisible(custom_xy_selected)
         self.scatter_y_var_selector.setVisible(custom_xy_selected)
+        
+        # Metrics button state
         self.metrics_button.setEnabled(bool(self.current_metrics) and execution_complete)
     
     def load_folders(self):
@@ -635,6 +679,84 @@ class MainWindow(QMainWindow):
         if self.scatter_y_var_selector.count() > 0:
             self.scatter_y_var_selector.item(0).setSelected(True)
 
+    def load_forage_variables(self):
+        """Load variables from FORAGE.OUT file"""
+        try:
+            if not self.selected_folder:
+                logging.warning("No folder selected for loading forage variables")
+                return
+
+            crop_details = get_crop_details()
+            crop_info = next(
+                (crop for crop in crop_details 
+                if crop['name'].upper() == self.selected_folder.upper()),
+                None
+            )
+            if not crop_info:
+                logging.error(f"Could not find crop info for: {self.selected_folder}")
+                return
+
+            forage_path = os.path.join(crop_info['directory'], "FORAGE.OUT")
+            if not os.path.exists(forage_path):
+                logging.warning(f"FORAGE.OUT not found at: {forage_path}")
+                return
+
+            # Read FORAGE.OUT data
+            forage_data = read_file(forage_path)
+            if forage_data is None or forage_data.empty:
+                logging.warning("No forage data available")
+                return
+
+            # Clear existing selections
+            self.forage_x_var_selector.clear()
+            self.forage_y_var_selector.clear()
+
+            # Separate time-related and other columns
+            time_columns = ["DATE", "DOY", "YEAR"]
+            data_columns = [col for col in forage_data.columns 
+                          if col not in ["TRT", "FILEX", "TRNO", "RUN"] + time_columns]
+
+            # Add time columns to X selector only
+            for col in sorted(time_columns):
+                if col in forage_data.columns:
+                    var_label, _ = get_variable_info(col)
+                    display_text = f"{var_label} ({col})" if var_label else col
+                    self.forage_x_var_selector.addItem(display_text, userData=col)
+
+            # Add other columns to both selectors
+            for col in sorted(data_columns):
+                var_label, _ = get_variable_info(col)
+                display_text = f"{var_label} ({col})" if var_label else col
+                
+                # Add to X selector
+                self.forage_x_var_selector.addItem(display_text, userData=col)
+                
+                # Add to Y selector
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.ItemDataRole.UserRole, col)
+                self.forage_y_var_selector.addItem(item)
+
+            # Set default x-axis variable (prefer DATE > DOY > first column)
+            default_x = None
+            if "DATE" in forage_data.columns:
+                default_x = "DATE"
+            elif "DOY" in forage_data.columns:
+                default_x = "DOY"
+            
+            if default_x:
+                for i in range(self.forage_x_var_selector.count()):
+                    if self.forage_x_var_selector.itemData(i) == default_x:
+                        self.forage_x_var_selector.setCurrentIndex(i)
+                        break
+
+            # Select a default Y variable (first non-time variable)
+            if self.forage_y_var_selector.count() > 0:
+                self.forage_y_var_selector.item(0).setSelected(True)
+
+        except Exception as e:
+            logging.error(f"Error loading forage variables: {e}", exc_info=True)
+            self.show_error("Error loading forage variables", str(e))
+
     def show_error(self, title, message):
         QMessageBox.critical(self, title, message)
     
@@ -799,6 +921,7 @@ class MainWindow(QMainWindow):
             self.load_output_files()
             self.load_variables()
             self.load_scatter_variables()
+            self.load_forage_variables()  # Added this line
             self.mark_data_needs_refresh()
             self.update_ui_state()
             self.on_refresh_clicked()
@@ -829,6 +952,8 @@ class MainWindow(QMainWindow):
             elif current_tab == 1:
                 self.update_scatter_plot()
             elif current_tab == 2:
+                self.update_forage_plot()
+            elif current_tab == 3:
                 self.update_data_table()
             self._tab_content_loaded[current_tab] = True
         finally:
@@ -838,24 +963,22 @@ class MainWindow(QMainWindow):
     
     @pyqtSlot(int)
     def on_tab_changed(self, index):
-        self._current_tab_index = index
-        old_tab = self.content_area.currentWidget()
-        self.update_ui_state()
-        if hasattr(self, 'file_group'):
-            self.file_group.setVisible(index != 1)
-        self.update_current_metrics(index)
-        if self.execution_status.get("completed", False):
-            if index not in self._tab_content_loaded or self._data_needs_refresh:
+        """Handle tab changes and load appropriate data"""
+        if not self._tab_content_loaded.get(index, False):
+            self.show_loading_indicator()
+            if index == 2:  # Forage tab
+                # Set FORAGE.OUT as the default file when switching to forage tab
+                for i in range(self.out_file_selector.count()):
+                    item = self.out_file_selector.item(i)
+                    if item.text() == "FORAGE.OUT":
+                        self.out_file_selector.clearSelection()
+                        item.setSelected(True)
+                        break
+            # Schedule deferred loading
+            if not self._pending_tab_load:
+                self._current_tab_index = index
                 self._pending_tab_load = True
-                self.show_loading_indicator(True)
-                self.tab_switch_timer.start(10)
-            else:
-                if index == 0:
-                    self.time_series_plot.update()
-                elif index == 1:
-                    self.scatter_plot.update()
-                elif index == 2:
-                    self.data_table.update()
+                QTimer.singleShot(100, self._deferred_tab_load)
     
     def _deferred_tab_load(self):
         index = self._current_tab_index
@@ -868,6 +991,8 @@ class MainWindow(QMainWindow):
             elif index == 1:
                 self.update_scatter_plot()
             elif index == 2:
+                self.update_forage_plot()
+            elif index == 3:
                 self.update_data_table()
             self._tab_content_loaded[index] = True
             if all(i in self._tab_content_loaded for i in range(self.content_area.count())):
@@ -1016,6 +1141,38 @@ class MainWindow(QMainWindow):
             logging.error(f"Error updating scatter plot: {e}", exc_info=True)
             self.show_error("Error updating scatter plot", str(e))
     
+    def update_forage_plot(self):
+        """Update the forage plot with current variable selections"""
+        try:
+            if not self.execution_status.get("completed", False):
+                return
+
+            x_var = self.forage_x_var_selector.currentData()
+            if not x_var:
+                x_var = self.forage_x_var_selector.currentText()
+
+            y_vars = []
+            for item in self.forage_y_var_selector.selectedItems():
+                var_code = item.data(Qt.ItemDataRole.UserRole)
+                if var_code:
+                    y_vars.append(var_code)
+                else:
+                    y_vars.append(item.text())
+
+            if not x_var or not y_vars:
+                return
+
+            self.forage_plot.plot_forage_data(
+                self.selected_folder,
+                self.selected_treatments,
+                x_var,
+                y_vars,
+                self.treatment_names
+            )
+        except Exception as e:
+            logging.error(f"Error updating forage plot: {e}", exc_info=True)
+            self.show_error("Error updating forage plot", str(e))
+
     def update_data_table(self):
         try:
             if not self.execution_status.get("completed", False):
@@ -1070,3 +1227,11 @@ class MainWindow(QMainWindow):
             
     def closeEvent(self, event):
         event.accept()
+    
+    def on_forage_var_selection_changed(self):
+        """Handler for forage variable selection changes"""
+        if 2 in self._tab_content_loaded:
+            self._tab_content_loaded.pop(2)  # Mark forage tab for refresh
+        self.move_selected_items_to_top(self.forage_y_var_selector)
+        # Update plot immediately
+        self.update_forage_plot()

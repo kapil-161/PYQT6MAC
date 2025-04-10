@@ -636,4 +636,4 @@ def read_evaluate_file(selected_folder: str) -> Optional[DataFrame]:
         logger.error(f"Error reading EVALUATE.OUT: {str(e)}")
         logger.exception("Detailed error:")
         return None
-    
+
